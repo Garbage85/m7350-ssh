@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>M7350 · Очистка Rayhunter</title>
+<style>
+body{font:16px system-ui,sans-serif;margin:auto;max-width:700px;padding:18px;background:#f6f8fb;color:#18263b}
+h1{font-size:23px}p{line-height:1.45}button{padding:12px 14px;margin:6px 5px 10px 0;border:0;border-radius:9px;background:#1768b1;color:white;font-size:16px}
+button[disabled]{opacity:.45}.danger{background:#9a2533}iframe{width:100%;height:220px;border:1px solid #c5cbd6;border-radius:9px;background:white}
+textarea{width:100%;min-height:190px;box-sizing:border-box;border:1px solid #bbc8d8;border-radius:9px;padding:10px}#status{white-space:pre-wrap;font-weight:600}
+</style></head><body>
+<h1>Очистка правил Rayhunter на M7350</h1>
+<p>Сначала авторизуйся в панели TP-Link ниже. Страница проверит <b>точные названия, команды и ID</b> двух правил. Без подтверждения ничего не удаляется.</p>
+<button id="read">1. Проверить правила</button>
+<button id="popup">Открыть панель отдельно</button>
+<button id="delete" class="danger" disabled>2. Удалить два правила Rayhunter</button>
+<p id="status">Ожидаю проверку.</p>
+<iframe id="router" src="/" title="Панель TP-Link"></iframe>
+<h3>Список правил</h3>
+<textarea id="out" readonly></textarea>
+<button id="copy">Скопировать результат</button>
+<p><small>После очистки нужно проверить Telnet после перезагрузки. SSH и его автозапуск эта страница не меняет.</small></p>
+<script>
+(function(){
+"use strict";
+const f=document.getElementById("router"), status=document.getElementById("status"),out=document.getElementById("out"),del=document.getElementById("delete");
+let popup=null, model=null, verified=false, inProgress=false;
+const expected=[
+{entryId:1,applicationName:"rayhunter-daemon",triggerPort:"$(/etc/init.d/rayhunter_daemon start &)"},
+{entryId:2,applicationName:"rayhunter-root",triggerPort:"$(busybox telnetd -l /bin/sh &)"}
+];
+function getModel(){
+ for(const w of [f.contentWindow,popup]){
+  try{if(w&&w.Globals&&w.Globals.models&&w.Globals.models.PTModel)return w.Globals.models.PTModel}catch(e){}
+ }
+ return null;
+}
+function assertTargetRules(arr){
+ if(!Array.isArray(arr))return false;
+ return expected.every(e=>arr.some(x=>Number(x.entryId)===e.entryId&&x.applicationName===e.applicationName&&x.triggerPort===e.triggerPort))
+ && arr.filter(x=>expected.some(e=>Number(x.entryId)===e.entryId)).length===2;
+}
+function fetchRules(afterDelete){
+ const m=getModel();if(!m){status.textContent="Модель PTModel не найдена. Войди в панель модема и повтори.";return}
+ model=m;verified=false;del.disabled=true;status.textContent="Получаю список…";
+ let done=false;
+ const timer=setTimeout(()=>{if(!done){done=true;status.textContent="Нет ответа от панели. Попробуй ещё раз после авторизации."}},10000);
+ m.once("fetch",function(){
+   if(done)return;done=true;clearTimeout(timer);
+   const arr=m.get("ptList");
+   out.value=JSON.stringify(arr||[],null,2);
+   if(afterDelete){
+     if(Array.isArray(arr)&&!arr.some(x=>x.applicationName==="rayhunter-root"||x.applicationName==="rayhunter-daemon"))
+       status.textContent="Успешно: обе записи отсутствуют. Не забудь проверить порт 23 после перезагрузки.";
+     else status.textContent="Нужно проверить результат: какие-то записи Rayhunter ещё есть.";
+     return;
+   }
+   if(assertTargetRules(arr)){
+     verified=true;del.disabled=false;
+     status.textContent="Подтверждены ровно две записи: rayhunter-daemon (ID 1), rayhunter-root (ID 2). Можно удалить.";
+   }else{
+     status.textContent="Точные записи не совпадают с ожидаемыми. Удаление заблокировано.";
+   }
+ });
+ try{m.fetch()}catch(e){done=true;clearTimeout(timer);status.textContent="Ошибка чтения: "+e.message}
+}
+document.getElementById("read").onclick=()=>fetchRules(false);
+document.getElementById("popup").onclick=()=>{popup=window.open("/","tplinkadmin");status.textContent="Авторизуйся в панели и вернись сюда."};
+del.onclick=function(){
+ if(!verified||inProgress||!model)return;
+ if(!confirm("Удалить только rayhunter-daemon (ID 1) и rayhunter-root (ID 2)? Это необратимое изменение настроек Port Triggering."))return;
+ verified=false;inProgress=true;del.disabled=true;status.textContent="Удаляю подтверждённые правила…";
+ const m=model;let done=false;
+ const timer=setTimeout(()=>{if(!done){done=true;inProgress=false;status.textContent="Нет ответа на удаление. Проверь список вручную кнопкой 1."}},10000);
+ m.once("delPT",function(){
+   if(done)return;done=true;clearTimeout(timer);inProgress=false;
+   if(Number(m.get("result"))!==0){status.textContent="Удаление отклонено, код результата: "+m.get("result");return}
+   fetchRules(true);
+ });
+ try{m.delPT({entryIdSet:[1,2]})}catch(e){done=true;clearTimeout(timer);inProgress=false;status.textContent="Ошибка удаления: "+e.message}
+};
+document.getElementById("copy").onclick=()=>{out.focus();out.select();try{if(document.execCommand("copy")){status.textContent="Скопировано";return}}catch(e){}status.textContent="Текст выделен для копирования"};
+})();
+</script></body></html>
