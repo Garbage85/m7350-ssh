@@ -1,0 +1,49 @@
+name: Build Dropbear SSH for TP-Link M7350 ARMv7
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: Install Zig cross compiler
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.13.0
+
+      - name: Download official Dropbear 2026.94 source and build ARMv7 static binaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --silent --show-error --retry 3 \
+            'https://matt.ucc.asn.au/dropbear/releases/dropbear-2026.94.tar.bz2' \
+            -o dropbear-2026.94.tar.bz2
+          tar -xjf dropbear-2026.94.tar.bz2
+          cd dropbear-2026.94
+          export CC='zig cc -target arm-linux-musleabihf'
+          export CFLAGS='-Os -ffunction-sections -fdata-sections'
+          export LDFLAGS='-static -Wl,--gc-sections'
+          ./configure --host=arm-linux-musleabihf --enable-static --disable-zlib --disable-syslog
+          make -j2 PROGRAMS='dropbear dropbearkey'
+          file dropbear dropbearkey
+          for binary in dropbear dropbearkey; do
+            if readelf -l "$binary" | grep -q INTERP; then
+              echo "ERROR: $binary is dynamically linked. Refusing to package it."
+              exit 1
+            fi
+          done
+          mkdir -p ../artifacts
+          cp dropbear dropbearkey ../artifacts/
+          chmod 755 ../artifacts/dropbear ../artifacts/dropbearkey
+          (cd ../artifacts && sha256sum dropbear dropbearkey > SHA256SUMS)
+
+      - name: Publish ARMv7 binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: dropbear-m7350-armv7
+          path: artifacts/
+          if-no-files-found: error
+          retention-days: 7
